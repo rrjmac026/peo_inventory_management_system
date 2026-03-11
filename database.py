@@ -1,234 +1,376 @@
 import sqlite3
+import hashlib
 from datetime import datetime
 
-DB_NAME = "inventory.db"
+DB_NAME = "assetmate.db"
 
 
 def get_connection():
-    """Create and return a database connection."""
     conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row  # lets us access columns by name
+    conn.row_factory = sqlite3.Row
     return conn
 
 
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
 def initialize_db():
-    """Create tables if they don't exist yet."""
     conn = get_connection()
-    cursor = conn.cursor()
+    c = conn.cursor()
 
-    # Products table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS products (
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            username   TEXT NOT NULL UNIQUE,
+            password   TEXT NOT NULL,
+            full_name  TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS categories (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL UNIQUE,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS suppliers (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL,
+            contact    TEXT,
+            email      TEXT,
+            phone      TEXT,
+            address    TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS assets (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            name        TEXT    NOT NULL,
-            category    TEXT    NOT NULL,
-            price       REAL    NOT NULL DEFAULT 0.0,
+            name        TEXT NOT NULL,
+            category_id INTEGER REFERENCES categories(id),
+            supplier_id INTEGER REFERENCES suppliers(id),
             quantity    INTEGER NOT NULL DEFAULT 0,
-            min_stock   INTEGER NOT NULL DEFAULT 5,
+            min_stock   INTEGER NOT NULL DEFAULT 1,
+            unit_value  REAL    NOT NULL DEFAULT 0.0,
+            condition   TEXT    DEFAULT 'Good',
+            location    TEXT,
+            serial_no   TEXT,
             description TEXT,
-            created_at  TEXT    DEFAULT CURRENT_TIMESTAMP,
-            updated_at  TEXT    DEFAULT CURRENT_TIMESTAMP
+            created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at  TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
-    # Activity log table  
-    cursor.execute("""
+    c.execute("""
         CREATE TABLE IF NOT EXISTS activity_log (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            action      TEXT NOT NULL,
-            product_id  INTEGER,
-            details     TEXT,
-            timestamp   TEXT DEFAULT CURRENT_TIMESTAMP
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user       TEXT,
+            action     TEXT NOT NULL,
+            target     TEXT,
+            details    TEXT,
+            timestamp  TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
+    # Default admin account
+    c.execute("SELECT COUNT(*) FROM users")
+    if c.fetchone()[0] == 0:
+        c.execute(
+            "INSERT INTO users (username, password, full_name) VALUES (?, ?, ?)",
+            ("admin", hash_password("admin123"), "Administrator")
+        )
+
+    # Default categories
+    defaults = ["Computers & IT", "Furniture", "Office Equipment", "Tools & Machinery", "Vehicles", "Others"]
+    for cat in defaults:
+        c.execute("INSERT OR IGNORE INTO categories (name) VALUES (?)", (cat,))
+
     conn.commit()
     conn.close()
-    print("✅ Database initialized successfully.")
 
 
-# ─────────────────────────────────────────────
-#  PRODUCT FUNCTIONS
-# ─────────────────────────────────────────────
-
-def add_product(name, category, price, quantity, min_stock=5, description=""):
-    """Add a new product. Returns the new product's ID."""
+# ── AUTH ───────────────────────────────────────────────────────────────────────
+def login(username, password):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO products (name, category, price, quantity, min_stock, description)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (name, category, price, quantity, min_stock, description))
-    product_id = cursor.lastrowid
-    _log_action(cursor, "ADD", product_id, f"Added '{name}' (qty: {quantity})")
-    conn.commit()
-    conn.close()
-    return product_id
-
-
-def get_all_products():
-    """Return all products as a list of dicts."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM products ORDER BY name ASC")
-    rows = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return rows
-
-
-def get_product_by_id(product_id):
-    """Return a single product by its ID."""
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM products WHERE id = ?", (product_id,))
-    row = cursor.fetchone()
+    row = conn.execute(
+        "SELECT * FROM users WHERE username=? AND password=?",
+        (username, hash_password(password))
+    ).fetchone()
     conn.close()
     return dict(row) if row else None
 
 
-def search_products(query):
-    """Search products by name or category."""
+# ── USERS ──────────────────────────────────────────────────────────────────────
+def get_all_users():
     conn = get_connection()
-    cursor = conn.cursor()
-    like = f"%{query}%"
-    cursor.execute("""
-        SELECT * FROM products
-        WHERE name LIKE ? OR category LIKE ?
-        ORDER BY name ASC
-    """, (like, like))
-    rows = [dict(row) for row in cursor.fetchall()]
+    rows = [dict(r) for r in conn.execute("SELECT * FROM users ORDER BY username")]
     conn.close()
     return rows
 
-
-def update_product(product_id, name, category, price, quantity, min_stock, description=""):
-    """Update an existing product."""
+def add_user(username, password, full_name=""):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        UPDATE products
-        SET name=?, category=?, price=?, quantity=?, min_stock=?, description=?,
-            updated_at=CURRENT_TIMESTAMP
+    try:
+        conn.execute(
+            "INSERT INTO users (username, password, full_name) VALUES (?, ?, ?)",
+            (username, hash_password(password), full_name)
+        )
+        conn.commit()
+        return True, "User created successfully."
+    except sqlite3.IntegrityError:
+        return False, "Username already exists."
+    finally:
+        conn.close()
+
+def delete_user(user_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+    conn.commit()
+    conn.close()
+
+def change_password(user_id, new_password):
+    conn = get_connection()
+    conn.execute("UPDATE users SET password=? WHERE id=?", (hash_password(new_password), user_id))
+    conn.commit()
+    conn.close()
+
+
+# ── CATEGORIES ─────────────────────────────────────────────────────────────────
+def get_all_categories():
+    conn = get_connection()
+    rows = [dict(r) for r in conn.execute("""
+        SELECT c.*, COUNT(a.id) as asset_count
+        FROM categories c
+        LEFT JOIN assets a ON a.category_id = c.id
+        GROUP BY c.id ORDER BY c.name
+    """)]
+    conn.close()
+    return rows
+
+def get_category_names():
+    conn = get_connection()
+    rows = [r[0] for r in conn.execute("SELECT name FROM categories ORDER BY name")]
+    conn.close()
+    return rows
+
+def add_category(name):
+    conn = get_connection()
+    try:
+        conn.execute("INSERT INTO categories (name) VALUES (?)", (name,))
+        conn.commit()
+        return True, "Category added."
+    except sqlite3.IntegrityError:
+        return False, "Category already exists."
+    finally:
+        conn.close()
+
+def rename_category(cat_id, new_name):
+    conn = get_connection()
+    try:
+        conn.execute("UPDATE categories SET name=? WHERE id=?", (new_name, cat_id))
+        conn.commit()
+        return True, "Category renamed."
+    except sqlite3.IntegrityError:
+        return False, "Name already exists."
+    finally:
+        conn.close()
+
+def delete_category(cat_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM categories WHERE id=?", (cat_id,))
+    conn.commit()
+    conn.close()
+
+
+# ── SUPPLIERS ──────────────────────────────────────────────────────────────────
+def get_all_suppliers():
+    conn = get_connection()
+    rows = [dict(r) for r in conn.execute("SELECT * FROM suppliers ORDER BY name")]
+    conn.close()
+    return rows
+
+def get_supplier_names():
+    conn = get_connection()
+    rows = [r[0] for r in conn.execute("SELECT name FROM suppliers ORDER BY name")]
+    conn.close()
+    return rows
+
+def add_supplier(name, contact="", email="", phone="", address=""):
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO suppliers (name, contact, email, phone, address) VALUES (?,?,?,?,?)",
+        (name, contact, email, phone, address)
+    )
+    conn.commit()
+    conn.close()
+
+def update_supplier(sup_id, name, contact, email, phone, address):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE suppliers SET name=?, contact=?, email=?, phone=?, address=? WHERE id=?",
+        (name, contact, email, phone, address, sup_id)
+    )
+    conn.commit()
+    conn.close()
+
+def delete_supplier(sup_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM suppliers WHERE id=?", (sup_id,))
+    conn.commit()
+    conn.close()
+
+def get_supplier_by_id(sup_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM suppliers WHERE id=?", (sup_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+# ── ASSETS ─────────────────────────────────────────────────────────────────────
+def get_all_assets():
+    conn = get_connection()
+    rows = [dict(r) for r in conn.execute("""
+        SELECT a.*, c.name as category_name, s.name as supplier_name
+        FROM assets a
+        LEFT JOIN categories c ON a.category_id = c.id
+        LEFT JOIN suppliers s ON a.supplier_id = s.id
+        ORDER BY a.name ASC
+    """)]
+    conn.close()
+    return rows
+
+def get_asset_by_id(asset_id):
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT a.*, c.name as category_name, s.name as supplier_name
+        FROM assets a
+        LEFT JOIN categories c ON a.category_id = c.id
+        LEFT JOIN suppliers s ON a.supplier_id = s.id
+        WHERE a.id=?
+    """, (asset_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def search_assets(query="", category_id=None):
+    conn = get_connection()
+    sql = """
+        SELECT a.*, c.name as category_name, s.name as supplier_name
+        FROM assets a
+        LEFT JOIN categories c ON a.category_id = c.id
+        LEFT JOIN suppliers s ON a.supplier_id = s.id
+        WHERE 1=1
+    """
+    params = []
+    if query:
+        sql += " AND (a.name LIKE ? OR a.serial_no LIKE ? OR a.location LIKE ?)"
+        like = f"%{query}%"
+        params += [like, like, like]
+    if category_id:
+        sql += " AND a.category_id = ?"
+        params.append(category_id)
+    sql += " ORDER BY a.name ASC"
+    rows = [dict(r) for r in conn.execute(sql, params)]
+    conn.close()
+    return rows
+
+def add_asset(name, category_id, supplier_id, quantity, min_stock,
+              unit_value, condition, location, serial_no, description, user="system"):
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO assets
+        (name, category_id, supplier_id, quantity, min_stock, unit_value,
+         condition, location, serial_no, description)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+    """, (name, category_id, supplier_id, quantity, min_stock,
+          unit_value, condition, location, serial_no, description))
+    _log(conn, user, "ADD", "asset", f"Added asset '{name}' (qty: {quantity})")
+    conn.commit()
+    conn.close()
+
+def update_asset(asset_id, name, category_id, supplier_id, quantity, min_stock,
+                 unit_value, condition, location, serial_no, description, user="system"):
+    conn = get_connection()
+    conn.execute("""
+        UPDATE assets SET name=?, category_id=?, supplier_id=?, quantity=?,
+        min_stock=?, unit_value=?, condition=?, location=?, serial_no=?,
+        description=?, updated_at=CURRENT_TIMESTAMP
         WHERE id=?
-    """, (name, category, price, quantity, min_stock, description, product_id))
-    _log_action(cursor, "EDIT", product_id, f"Updated '{name}'")
+    """, (name, category_id, supplier_id, quantity, min_stock,
+          unit_value, condition, location, serial_no, description, asset_id))
+    _log(conn, user, "EDIT", "asset", f"Updated asset '{name}'")
     conn.commit()
     conn.close()
 
-
-def delete_product(product_id):
-    """Delete a product by ID."""
+def delete_asset(asset_id, user="system"):
     conn = get_connection()
-    cursor = conn.cursor()
-    product = get_product_by_id(product_id)
-    cursor.execute("DELETE FROM products WHERE id = ?", (product_id,))
-    if product:
-        _log_action(cursor, "DELETE", product_id, f"Deleted '{product['name']}'")
+    a = get_asset_by_id(asset_id)
+    conn.execute("DELETE FROM assets WHERE id=?", (asset_id,))
+    if a:
+        _log(conn, user, "DELETE", "asset", f"Deleted asset '{a['name']}'")
     conn.commit()
     conn.close()
 
-
-def get_low_stock_products():
-    """Return products where quantity is at or below min_stock."""
+def get_low_stock_assets():
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT * FROM products
-        WHERE quantity <= min_stock
-        ORDER BY quantity ASC
-    """)
-    rows = [dict(row) for row in cursor.fetchall()]
+    rows = [dict(r) for r in conn.execute("""
+        SELECT a.*, c.name as category_name
+        FROM assets a
+        LEFT JOIN categories c ON a.category_id = c.id
+        WHERE a.quantity <= a.min_stock
+        ORDER BY a.quantity ASC
+    """)]
     conn.close()
     return rows
 
 
-# ─────────────────────────────────────────────
-#  DASHBOARD STATS
-# ─────────────────────────────────────────────
-
+# ── DASHBOARD STATS ────────────────────────────────────────────────────────────
 def get_dashboard_stats():
-    """Return summary stats for the dashboard."""
     conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT COUNT(*) FROM products")
-    total_products = cursor.fetchone()[0]
-
-    cursor.execute("SELECT SUM(quantity) FROM products")
-    total_items = cursor.fetchone()[0] or 0
-
-    cursor.execute("SELECT SUM(price * quantity) FROM products")
-    total_value = cursor.fetchone()[0] or 0.0
-
-    cursor.execute("SELECT COUNT(*) FROM products WHERE quantity <= min_stock")
-    low_stock_count = cursor.fetchone()[0]
-
-    cursor.execute("SELECT COUNT(DISTINCT category) FROM products")
-    total_categories = cursor.fetchone()[0]
-
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM assets");                              total_assets     = c.fetchone()[0]
+    c.execute("SELECT SUM(quantity) FROM assets");                         total_units      = c.fetchone()[0] or 0
+    c.execute("SELECT SUM(unit_value * quantity) FROM assets");            total_value      = c.fetchone()[0] or 0.0
+    c.execute("SELECT COUNT(*) FROM assets WHERE quantity <= min_stock");  low_stock_count  = c.fetchone()[0]
+    c.execute("SELECT COUNT(DISTINCT category_id) FROM assets");           total_categories = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM suppliers");                           total_suppliers  = c.fetchone()[0]
     conn.close()
     return {
-        "total_products":   total_products,
-        "total_items":      total_items,
+        "total_assets":     total_assets,
+        "total_units":      total_units,
         "total_value":      round(total_value, 2),
         "low_stock_count":  low_stock_count,
         "total_categories": total_categories,
+        "total_suppliers":  total_suppliers,
     }
 
 
-# ─────────────────────────────────────────────
-#  ACTIVITY LOG
-# ─────────────────────────────────────────────
+# ── ACTIVITY LOG ───────────────────────────────────────────────────────────────
+def _log(conn, user, action, target, details):
+    conn.execute(
+        "INSERT INTO activity_log (user, action, target, details) VALUES (?,?,?,?)",
+        (user, action, target, details)
+    )
 
-def _log_action(cursor, action, product_id, details):
-    """Internal: write to the activity log (uses existing cursor)."""
-    cursor.execute("""
-        INSERT INTO activity_log (action, product_id, details)
-        VALUES (?, ?, ?)
-    """, (action, product_id, details))
-
-
-def get_recent_activity(limit=10):
-    """Return the most recent activity log entries."""
+def get_recent_activity(limit=20):
     conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT * FROM activity_log
-        ORDER BY timestamp DESC
-        LIMIT ?
-    """, (limit,))
-    rows = [dict(row) for row in cursor.fetchall()]
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM activity_log ORDER BY timestamp DESC LIMIT ?", (limit,)
+    )]
     conn.close()
     return rows
 
+def log_action(user, action, target, details):
+    conn = get_connection()
+    _log(conn, user, action, target, details)
+    conn.commit()
+    conn.close()
 
-# ─────────────────────────────────────────────
-#  QUICK TEST — run this file directly to test
-# ─────────────────────────────────────────────
 
-if __name__ == "__main__":
-    initialize_db()
-
-    # Add sample products
-    add_product("Apple iPhone 15",    "Electronics",  55000, 10, 3, "Latest iPhone model")
-    add_product("Samsung Galaxy S24", "Electronics",  48000, 2,  3, "Android flagship")
-    add_product("Office Chair",       "Furniture",    8500,  15, 5, "Ergonomic chair")
-    add_product("Ballpen Box",        "Stationery",   120,   3,  10, "Box of 12 ballpens")
-    add_product("A4 Bond Paper",      "Stationery",   350,   50, 10, "500 sheets per ream")
-
-    print("\n📦 All Products:")
-    for p in get_all_products():
-        print(f"  [{p['id']}] {p['name']} | Qty: {p['quantity']} | ₱{p['price']}")
-
-    print("\n⚠️  Low Stock:")
-    for p in get_low_stock_products():
-        print(f"  {p['name']} — only {p['quantity']} left!")
-
-    print("\n📊 Dashboard Stats:")
-    stats = get_dashboard_stats()
-    for k, v in stats.items():
-        print(f"  {k}: {v}")
-
-    print("\n📝 Recent Activity:")
-    for log in get_recent_activity():
-        print(f"  [{log['timestamp']}] {log['action']} — {log['details']}")
+# ── REPORTS ────────────────────────────────────────────────────────────────────
+def get_assets_for_report(category_id=None):
+    return search_assets(category_id=category_id)

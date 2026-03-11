@@ -1,129 +1,161 @@
-# ══════════════════════════════════════════════════════════════════════════════
-#  main.py — App entry point. Only handles the window, sidebar, and page routing.
-#  Each page lives in its own file — add new pages here without touching others.
-# ══════════════════════════════════════════════════════════════════════════════
-
 import customtkinter as ctk
+from theme import *
 from database import initialize_db
-from theme import (
-    BG_MAIN, BG_SIDEBAR, BG_CARD, ACCENT,
-    TEXT_MAIN, TEXT_DIM, BORDER,
-    FONT_BODY, FONT_BOLD
-)
+from pages.login import LoginPage
+from pages.dashboard import DashboardPage
+from pages.assets import AssetsPage
+from pages.categories import CategoriesPage
+from pages.suppliers import SuppliersPage
+from pages.lowstock import LowStockPage
+from pages.reports import ReportsPage
+from pages.users import UsersPage
 
-# ── Page imports ───────────────────────────────────────────────────────────────
-from dashboard        import DashboardPage
-from products         import ProductsPage
-from pages.lowstock   import LowStockPage
-from pages.activity   import ActivityPage
+NAV = [
+    ("dashboard",  "🏠", "Dashboard"),
+    ("assets",     "📦", "Assets"),
+    ("categories", "📁", "Categories"),
+    ("suppliers",  "🏭", "Suppliers"),
+    ("lowstock",   "⚠️",  "Low Stock"),
+    ("reports",    "📊", "Reports"),
+    ("users",      "👥", "Users"),
+]
+
+PAGE_CLASSES = {
+    "dashboard":  DashboardPage,
+    "assets":     AssetsPage,
+    "categories": CategoriesPage,
+    "suppliers":  SuppliersPage,
+    "lowstock":   LowStockPage,
+    "reports":    ReportsPage,
+    "users":      UsersPage,
+}
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  MAIN APPLICATION WINDOW
-# ══════════════════════════════════════════════════════════════════════════════
-class InventoryApp(ctk.CTk):
+class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        initialize_db()
-
-        self.title("📦 Inventory Management System")
+        self.title("AssetMate — Equipment & Asset Inventory")
         self.geometry("1200x720")
-        self.minsize(1000, 620)
+        self.minsize(960, 600)
         self.configure(fg_color=BG_MAIN)
+        self.current_user  = None
+        self._active_page  = None
+        self._nav_buttons  = {}
+        self._show_login()
 
-        self.current_page = None
-        self._build_layout()
+    # ── LOGIN ──────────────────────────────────────────────────────────────────
+    def _show_login(self):
+        for w in self.winfo_children():
+            w.destroy()
+        LoginPage(self, on_login_success=self._on_login).pack(fill="both", expand=True)
+
+    def _on_login(self, user):
+        self.current_user = user
+        self._build_main()
         self.show_page("dashboard")
 
-    def _build_layout(self):
-        self.grid_columnconfigure(1, weight=1)
+    # ── MAIN LAYOUT ────────────────────────────────────────────────────────────
+    def _build_main(self):
+        for w in self.winfo_children():
+            w.destroy()
+
         self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
 
-        self.sidebar = Sidebar(self, self.show_page)
+        # Sidebar
+        self.sidebar = ctk.CTkFrame(self, fg_color=BG_SIDEBAR, width=210, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
+        self.sidebar.grid_propagate(False)
+        self.sidebar.grid_rowconfigure(99, weight=1)
 
+        # App logo
+        logo_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        logo_frame.grid(row=0, column=0, sticky="ew", padx=16, pady=(22, 16))
+        ctk.CTkLabel(logo_frame, text="🏢", font=("Segoe UI Emoji", 28)).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(logo_frame, text="AssetMate", font=FONT_BOLD(18),
+                     text_color=ACCENT).pack(side="left")
+
+        # Divider
+        ctk.CTkFrame(self.sidebar, fg_color=BORDER, height=1).grid(
+            row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
+
+        # Nav buttons
+        self._nav_buttons = {}
+        for i, (key, icon, label) in enumerate(NAV):
+            btn = ctk.CTkButton(
+                self.sidebar,
+                text=f"  {icon}   {label}",
+                anchor="w",
+                height=40,
+                corner_radius=8,
+                fg_color="transparent",
+                hover_color=BG_CARD,
+                text_color=TEXT_DIM,
+                font=FONT_BODY(),
+                command=lambda k=key: self.show_page(k)
+            )
+            btn.grid(row=i+2, column=0, sticky="ew", padx=10, pady=2)
+            self._nav_buttons[key] = btn
+
+        # Bottom: user info + logout
+        ctk.CTkFrame(self.sidebar, fg_color=BORDER, height=1).grid(
+            row=98, column=0, sticky="ew", padx=12, pady=(0, 8))
+
+        user_frame = ctk.CTkFrame(self.sidebar, fg_color=BG_CARD, corner_radius=10)
+        user_frame.grid(row=100, column=0, sticky="ew", padx=10, pady=(0, 8))
+
+        av = ctk.CTkFrame(user_frame, fg_color=ACCENT2, corner_radius=16, width=32, height=32)
+        av.pack(side="left", padx=(10, 8), pady=8)
+        av.pack_propagate(False)
+        initials = (self.current_user["full_name"] or self.current_user["username"])[:1].upper()
+        ctk.CTkLabel(av, text=initials, font=FONT_BOLD(13), text_color="white").place(
+            relx=0.5, rely=0.5, anchor="center")
+
+        info = ctk.CTkFrame(user_frame, fg_color="transparent")
+        info.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(info, text=self.current_user["full_name"] or self.current_user["username"],
+                     font=FONT_BOLD(11), text_color=TEXT_MAIN).pack(anchor="w")
+        ctk.CTkLabel(info, text=f"@{self.current_user['username']}",
+                     font=FONT_TINY(), text_color=TEXT_DIM).pack(anchor="w")
+
+        ctk.CTkButton(self.sidebar, text="⏏  Logout", height=34, corner_radius=8,
+                      fg_color="transparent", hover_color=DANGER, text_color=TEXT_DIM,
+                      font=FONT_SMALL(), command=self._logout).grid(
+                          row=101, column=0, sticky="ew", padx=10, pady=(0, 16))
+
+        # Content area
         self.content = ctk.CTkFrame(self, fg_color=BG_MAIN, corner_radius=0)
         self.content.grid(row=0, column=1, sticky="nsew")
         self.content.grid_rowconfigure(0, weight=1)
         self.content.grid_columnconfigure(0, weight=1)
 
-    def show_page(self, name):
-        if self.current_page:
-            self.current_page.destroy()
+    # ── PAGE ROUTER ────────────────────────────────────────────────────────────
+    def show_page(self, key):
+        if self._active_page:
+            self._active_page.destroy()
 
-        # ── To add a new page: import it above, then add it here ──────────────
-        pages = {
-            "dashboard": DashboardPage,
-            "products":  ProductsPage,
-            "lowstock":  LowStockPage,
-            "activity":  ActivityPage,
-        }
-
-        self.current_page = pages[name](self.content, self.show_page)
-        self.current_page.grid(row=0, column=0, sticky="nsew", padx=24, pady=24)
-        self.sidebar.set_active(name)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  SIDEBAR
-# ══════════════════════════════════════════════════════════════════════════════
-class Sidebar(ctk.CTkFrame):
-    # ── Add new nav items here as you create new pages ─────────────────────────
-    NAV = [
-        ("dashboard", "⬛", "Dashboard"),
-        ("products",  "📦", "Products"),
-        ("lowstock",  "⚠️",  "Low Stock"),
-        ("activity",  "📋", "Activity Log"),
-    ]
-
-    def __init__(self, parent, on_navigate):
-        super().__init__(parent, fg_color=BG_SIDEBAR, corner_radius=0, width=220)
-        self.on_navigate = on_navigate
-        self._buttons = {}
-        self._build()
-
-    def _build(self):
-        self.pack_propagate(False)
-        self.grid_propagate(False)
-
-        logo = ctk.CTkFrame(self, fg_color="transparent", height=80)
-        logo.pack(fill="x", padx=20, pady=(24, 8))
-        ctk.CTkLabel(logo, text="📦", font=("Segoe UI Emoji", 28)).pack(anchor="w")
-        ctk.CTkLabel(logo, text="StockMate", font=FONT_BOLD(18),
-                     text_color=TEXT_MAIN).pack(anchor="w")
-        ctk.CTkLabel(logo, text="Inventory System", font=FONT_BODY(),
-                     text_color=TEXT_DIM).pack(anchor="w")
-
-        ctk.CTkFrame(self, fg_color=BORDER, height=1).pack(fill="x", padx=16, pady=12)
-
-        nav_frame = ctk.CTkFrame(self, fg_color="transparent")
-        nav_frame.pack(fill="x", padx=12)
-
-        for key, icon, label in self.NAV:
-            btn = ctk.CTkButton(
-                nav_frame, text=f"  {icon}  {label}",
-                anchor="w", height=44, corner_radius=10,
-                font=FONT_BODY(),
-                fg_color="transparent", hover_color=BG_CARD,
-                text_color=TEXT_DIM,
-                command=lambda k=key: self.on_navigate(k)
+        # Update nav highlight
+        for k, btn in self._nav_buttons.items():
+            btn.configure(
+                fg_color=BG_CARD if k == key else "transparent",
+                text_color=TEXT_MAIN if k == key else TEXT_DIM
             )
-            btn.pack(fill="x", pady=2)
-            self._buttons[key] = btn
 
-        ctk.CTkFrame(self, fg_color=BORDER, height=1).pack(
-            fill="x", padx=16, pady=12, side="bottom")
-        ctk.CTkLabel(self, text="v1.0.0  •  SQLite", font=FONT_BODY(),
-                     text_color=TEXT_DIM).pack(side="bottom", pady=(0, 16))
+        PageClass = PAGE_CLASSES.get(key)
+        if PageClass:
+            page = PageClass(self.content, navigate=self.show_page,
+                             current_user=self.current_user)
+            page.grid(row=0, column=0, sticky="nsew", padx=28, pady=22)
+            self._active_page = page
 
-    def set_active(self, key):
-        for k, btn in self._buttons.items():
-            if k == key:
-                btn.configure(fg_color=BG_CARD, text_color=ACCENT)
-            else:
-                btn.configure(fg_color="transparent", text_color=TEXT_DIM)
+    # ── LOGOUT ─────────────────────────────────────────────────────────────────
+    def _logout(self):
+        self.current_user = None
+        self._active_page = None
+        self._show_login()
 
 
 if __name__ == "__main__":
-    app = InventoryApp()
+    initialize_db()
+    app = App()
     app.mainloop()
